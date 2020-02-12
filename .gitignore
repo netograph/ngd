@@ -1,0 +1,17 @@
+node_modules
+build
+tmp
+venv
+*.pyo
+*.pyc
+*.egg-info
+*.map
+.DS_Store
+python/dist
+
+secrets
+.secrets.tmp
+.sass-cache
+.tmp
+.cache
+.pytest_cache

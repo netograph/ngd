@@ -135,10 +135,17 @@ func domainsCommand() *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			f, err := os.Open(args[0])
-			if err != nil {
-				return err
+			var f *os.File
+			if args[0] == "-" {
+				f = os.Stdin
+			} else {
+				var err error
+				f, err = os.Open(args[0])
+				if err != nil {
+					return err
+				}
 			}
+
 			r := bufio.NewReader(f)
 			log.SetOutput(ioutil.Discard)
 			var wg sync.WaitGroup
@@ -165,9 +172,9 @@ func domainsCommand() *cobra.Command {
 							if *debug {
 								fmt.Fprintln(os.Stderr, err)
 							}
-							fmt.Printf("http://%s/\n", domain)
+							fmt.Printf("%s,http://%s/\n", domain, domain)
 						} else {
-							fmt.Printf("https://%s/\n", current)
+							fmt.Printf("%s,https://%s/\n", domain, current)
 						}
 					}
 				}()

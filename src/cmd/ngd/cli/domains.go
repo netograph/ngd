@@ -10,7 +10,6 @@ import (
 	"math/rand"
 	"net"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -20,12 +19,6 @@ import (
 
 const ResolverRetries = 5
 
-var ParkingPatterns = []string{
-	"park",
-	"namecheap",
-	"namebright",
-	"hdredirect",
-}
 var Resolvers = []string{
 	// Google
 	"8.8.8.8",
@@ -43,16 +36,6 @@ var Resolvers = []string{
 
 func resolver() string {
 	return Resolvers[rand.Int()%len(Resolvers)]
-}
-
-func matchAny(patts []string, target string) bool {
-	target = strings.ToLower(target)
-	for _, p := range patts {
-		if strings.Contains(target, p) {
-			return true
-		}
-	}
-	return false
 }
 
 func resolve(dialer *net.Dialer, dom string, debug bool) (string, error) {
@@ -100,11 +83,7 @@ func resolve(dialer *net.Dialer, dom string, debug bool) (string, error) {
 		case *dns.A:
 			ip = v.A.String()
 		// TODO: AAAA records
-		case *dns.CNAME:
-			// TODO: Remove
-			if matchAny(ParkingPatterns, v.Target) {
-				return "", fmt.Errorf("domain %s seems parked at cname %s", dom, v.Target)
-			}
+		// TODO: Do we need to try all A/AAAA records? Not sure what the spec says.
 		}
 	}
 	if ip == "" {
@@ -118,6 +97,7 @@ func resolve(dialer *net.Dialer, dom string, debug bool) (string, error) {
 	)
 	if err != nil {
 		return "", fmt.Errorf("%s on %s: %s", dom, ip, err)
+		// TODO: Attempt to connect to :80 here and return http:// if successful.
 	}
 	if err := conn.Close(); err != nil {
 		if debug {

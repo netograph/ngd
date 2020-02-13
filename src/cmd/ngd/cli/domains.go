@@ -55,7 +55,7 @@ func matchAny(patts []string, target string) bool {
 	return false
 }
 
-func resolve(dialer *net.Dialer, dom string, debug bool) string {
+func resolve(dialer *net.Dialer, dom string, debug bool) (string, error) {
 	ma := &dns.Msg{
 		MsgHdr: dns.MsgHdr{
 			Id:               dns.Id(),
@@ -83,19 +83,15 @@ func resolve(dialer *net.Dialer, dom string, debug bool) string {
 		time.Sleep(100 * time.Duration(len(resolvers)) * time.Millisecond)
 	}
 	if in == nil {
-		if debug {
-			fmt.Fprintf(
-				os.Stderr,
-				"failed to resolve after %d retries on %v: %s\n",
-				len(resolvers),
-				resolvers,
-				dom,
-			)
-		}
-		return ""
+		return "", fmt.Errorf(
+			"failed to resolve after %d retries on %v: %s",
+			len(resolvers),
+			resolvers,
+			dom,
+		)
 	}
 	if len(in.Answer) == 0 {
-		return ""
+		return "", errors.New("empty DNS answer")
 	}
 
 	ip := ""
@@ -103,20 +99,16 @@ func resolve(dialer *net.Dialer, dom string, debug bool) string {
 		switch v := a.(type) {
 		case *dns.A:
 			ip = v.A.String()
+		// TODO: AAAA records
 		case *dns.CNAME:
+			// TODO: Remove
 			if matchAny(ParkingPatterns, v.Target) {
-				if debug {
-					fmt.Fprintf(
-						os.Stderr,
-						"domain %s seems parked at cname %s\n", dom, v.Target,
-					)
-				}
-				return ""
+				return "", fmt.Errorf("domain %s seems parked at cname %s", dom, v.Target)
 			}
 		}
 	}
 	if ip == "" {
-		return ""
+		return "", errors.New("no A record")
 	}
 	conn, err := tls.DialWithDialer(
 		dialer,
@@ -125,17 +117,14 @@ func resolve(dialer *net.Dialer, dom string, debug bool) string {
 		&tls.Config{ServerName: dom},
 	)
 	if err != nil {
-		if debug {
-			fmt.Fprintf(os.Stderr, "%s on %s: %s\n", dom, ip, err)
-		}
-		return ""
+		return "", fmt.Errorf("%s on %s: %s", dom, ip, err)
 	}
 	if err := conn.Close(); err != nil {
 		if debug {
 			fmt.Fprintf(os.Stderr, "error on close: %s", err)
 		}
 	}
-	return "https://" + dom
+	return "https://" + dom + "/", nil
 }
 
 func domainsCommand() *cobra.Command {
@@ -164,21 +153,20 @@ func domainsCommand() *cobra.Command {
 					Timeout:       10 * time.Second,
 					FallbackDelay: -1,
 				}
+				wg.Add(1)
 				go func() {
-					wg.Add(1)
 					defer wg.Done()
-					for {
-						res, more := <-ch
-						if more {
-							for _, dom := range []string{res, "www." + res} {
-								d := resolve(dialer, dom, *debug)
-								if d != "" {
-									fmt.Println(d)
-									break
+					for res := range ch {
+						for _, dom := range []string{res, "www." + res} {
+							url, err := resolve(dialer, dom, *debug)
+							if err != nil {
+								if *debug {
+									fmt.Fprintf(os.Stderr, "%s,%s\n", dom, err)
 								}
+							} else {
+								fmt.Printf("%s,%s\n", dom, url)
+								break
 							}
-						} else {
-							return
 						}
 					}
 				}()
@@ -190,6 +178,8 @@ func domainsCommand() *cobra.Command {
 				}
 				ch <- string(t)
 			}
+			close(ch)
+			wg.Wait()
 			return nil
 		},
 	}

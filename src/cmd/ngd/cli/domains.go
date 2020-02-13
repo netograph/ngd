@@ -38,7 +38,7 @@ func resolver() string {
 	return Resolvers[rand.Int()%len(Resolvers)]
 }
 
-func resolve(dialer *net.Dialer, dom string, debug bool) (string, error) {
+func resolve(domain string) ([]string, error) {
 	ma := &dns.Msg{
 		MsgHdr: dns.MsgHdr{
 			Id:               dns.Id(),
@@ -46,7 +46,7 @@ func resolve(dialer *net.Dialer, dom string, debug bool) (string, error) {
 		},
 		Question: []dns.Question{
 			dns.Question{
-				Name:   dom + ".",
+				Name:   domain + ".",
 				Qtype:  dns.TypeA,
 				Qclass: dns.ClassINET,
 			},
@@ -66,45 +66,60 @@ func resolve(dialer *net.Dialer, dom string, debug bool) (string, error) {
 		time.Sleep(100 * time.Duration(len(resolvers)) * time.Millisecond)
 	}
 	if in == nil {
-		return "", fmt.Errorf(
+		return nil, fmt.Errorf(
 			"failed to resolve after %d retries on %v: %s",
 			len(resolvers),
 			resolvers,
-			dom,
+			domain,
 		)
 	}
 	if len(in.Answer) == 0 {
-		return "", errors.New("empty DNS answer")
+		return nil, fmt.Errorf("empty DNS answer for %s", domain)
 	}
 
-	ip := ""
+	ips := []string{}
 	for _, a := range in.Answer {
 		switch v := a.(type) {
 		case *dns.A:
-			ip = v.A.String()
-		// TODO: AAAA records
-		// TODO: Do we need to try all A/AAAA records? Not sure what the spec says.
+			ips = append(ips, v.A.String())
 		}
+		//TODO: Eventually add IPv6 support
 	}
-	if ip == "" {
-		return "", errors.New("no A record")
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("no A records for %s", domain)
 	}
-	conn, err := tls.DialWithDialer(
-		dialer,
-		"tcp",
-		ip+":443",
-		&tls.Config{ServerName: dom},
-	)
+	return ips, nil
+}
+
+func probeHttps(dialer *net.Dialer, domain string, debug bool) error {
+	ips, err := resolve(domain)
 	if err != nil {
-		return "", fmt.Errorf("%s on %s: %s", dom, ip, err)
-		// TODO: Attempt to connect to :80 here and return http:// if successful.
+		return err
 	}
-	if err := conn.Close(); err != nil {
-		if debug {
-			fmt.Fprintf(os.Stderr, "error on close: %s", err)
+	var lastErr error
+	for _, ip := range ips {
+		if debug && lastErr != nil {
+			fmt.Fprintln(os.Stderr, lastErr)
 		}
+		conn, err := tls.DialWithDialer(
+			dialer,
+			"tcp",
+			ip+":443",
+			&tls.Config{ServerName: domain},
+		)
+		if err != nil {
+			lastErr = fmt.Errorf("%s on %s: %s", domain, ip, err)
+			continue
+		}
+		if err := conn.Close(); err != nil {
+			// we swallow this one, as long as establishment is working we are good.
+			if debug {
+				fmt.Fprintf(os.Stderr, "%s on %s: error on close, %s", domain, ip, err)
+			}
+		}
+		return nil
 	}
-	return "https://" + dom + "/", nil
+	return lastErr
 }
 
 func domainsCommand() *cobra.Command {
@@ -136,17 +151,23 @@ func domainsCommand() *cobra.Command {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					for res := range ch {
-						for _, dom := range []string{res, "www." + res} {
-							url, err := resolve(dialer, dom, *debug)
-							if err != nil {
-								if *debug {
-									fmt.Fprintf(os.Stderr, "%s,%s\n", dom, err)
-								}
-							} else {
-								fmt.Printf("%s,%s\n", dom, url)
-								break
+					for domain := range ch {
+						current := domain
+						err := probeHttps(dialer, current, *debug)
+						if err != nil {
+							if *debug {
+								fmt.Fprintln(os.Stderr, err)
 							}
+							current = "www." + domain
+							err = probeHttps(dialer, current, *debug)
+						}
+						if err != nil {
+							if *debug {
+								fmt.Fprintln(os.Stderr, err)
+							}
+							fmt.Printf("http://%s/\n", domain)
+						} else {
+							fmt.Printf("https://%s/\n", current)
 						}
 					}
 				}()
